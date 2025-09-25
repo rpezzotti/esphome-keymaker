@@ -59,18 +59,31 @@ Device name precedence when scanning a file is:
 3. filename stem
 
 ### 3. Generate API keys
+By default the script prints generated secrets to stdout. It will only write to a file when you provide `--output <path>`. Overwrites happen only when you pass `--force` together with `--output`.
+
 ```bash
-python gen_secrets.py ./esphome/devices --mode api --master-secret-file ~/.esph_master --output ./esphome/secrets.yaml
+# Print to stdout (default)
+python gen_secrets.py ./esphome/devices --mode api --master-secret-file ~/.esph_master
+
+# Write to file (overwrites only if --force is provided)
+python gen_secrets.py ./esphome/devices --mode api --master-secret-file ~/.esph_master --output ./esphome/secrets.yaml --force
 ```
 
-The script derives deterministic values (via `esphome_keys`) and merges any new secrets into `./esphome/secrets.yaml`. 
+The script derives deterministic values (via `esphome_keys`) and merges any new secrets into `./esphome/secrets.yaml` when `--output` is used. 
 
 ### 4. Generate OTA passwords
 ```bash
-python gen_secrets.py ./esphome/devices --mode ota --master-secret-file ~/.esph_master --print
+# Print to stdout (default)
+python gen_secrets.py ./esphome/devices --mode ota --master-secret-file ~/.esph_master
+
+# Print both api and ota for each device
+python gen_secrets.py ./esphome/devices --mode both --master-secret-file ~/.esph_master
+
+# Write both to file (use --force to overwrite existing keys)
+python gen_secrets.py ./esphome/devices --mode both --master-secret-file ~/.esph_master --output ./esphome/secrets.yaml --force
 ```
 
-This prints per-device OTA secrets to stdout, so you can paste/append manually.
+This prints per-device OTA (and/or API) secrets to stdout by default, so you can paste/append manually, or use `--output` to persist them.
 
 ---
 
@@ -100,8 +113,11 @@ ota_pw = derive_ota_password("switch_living", master_secret)
 
 ## Notes
 
+- Master secret lookup order: command-line `--master-secret` string, `--master-secret-file`, `~/.esph_master` (hidden file in home), then the `ESPHOME_MASTER_SECRET` environment variable.
 - YAML `!secret` support: `gen_secrets.py` registers a constructor with PyYAML's SafeLoader so common ESPHome `!secret` tags are parsed as their underlying scalar names (e.g. `!secret ota_pass` -> `ota_pass`). You don't need to preprocess files to remove `!secret` tags.
--- Key naming: the script writes keys named `<mode>_<device_name>` (for example `api_switch_living`). It no longer reads a user-specified substitution variable.
+- Key naming: the script writes keys named `<mode>_<device_name>` (for example `api_switch_living`). It no longer reads a user-specified substitution variable.
+- Single-device mode: pass `--device NAME` to generate secrets for one device name without scanning a folder.
+- Safety: `--force` only applies when `--output` is provided. Passing `--force` without `--output` will error.
 
 ---
 

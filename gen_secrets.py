@@ -49,11 +49,15 @@ def load_master_secret(args: argparse.Namespace) -> str:
         if not p.exists():
             sys.exit(f"Master secret file not found: {p}")
         return p.read_text().strip()
-    # Also allow environment variable
+    # If not provided, look for a hidden file in the user's home directory first
+    default_file = Path.home() / ".esph_master"
+    if default_file.exists():
+        return default_file.read_text().strip()
+    # Fallback to environment variable
     env = os.getenv("ESPHOME_MASTER_SECRET")
     if env:
         return env.strip()
-    sys.exit("Missing master secret. Use --master-secret, --master-secret-file, or ESPHOME_MASTER_SECRET env var.")
+    sys.exit("Missing master secret. Use --master-secret, --master-secret-file, ~/.esph_master, or ESPHOME_MASTER_SECRET env var.")
 
 def read_yaml(path: Path) -> Dict:
     try:
@@ -109,18 +113,26 @@ def write_secrets(path: Path, mapping: Dict[str, str]) -> None:
 
 def main():
     ap = argparse.ArgumentParser(description="Generate ESPHome secrets for devices in a folder.")
-    ap.add_argument("folder", help="Folder containing ESPHome YAMLs (recursively scanned)")
-    ap.add_argument("--mode", choices=["api", "ota"], default="api",
-                    help="Type of secret to derive (default: api)")
+    ap.add_argument("folder", nargs='?', help="Folder containing ESPHome YAMLs (recursively scanned). Optional if --device is used")
+    ap.add_argument("--mode", choices=["api", "ota", "both"], default="both",
+                    help="Type of secret to derive (default: api). Use 'both' to generate api and ota for each device")
     ap.add_argument("--master-secret", help="Master secret (string) for deterministic derivation")
     ap.add_argument("--master-secret-file", help="Path to file containing master secret")
     ap.add_argument("--output", help="Path to secrets.yaml to create/update")
     ap.add_argument("--print", action="store_true", help="Print resulting key: value pairs instead of writing a file")
+    ap.add_argument("--force", action="store_true", help="Overwrite existing keys in secrets.yaml")
+    ap.add_argument("--device", help="Provide a single device name instead of scanning a folder")
     args = ap.parse_args()
-
-    root = Path(args.folder).resolve()
-    if not root.exists():
+    # Validate inputs: either a folder or a device name must be provided
+    if not args.device and not args.folder:
+        sys.exit("Provide a folder to scan or a device name with --device")
+    root = Path(args.folder).resolve() if args.folder else None
+    if root and not root.exists():
         sys.exit(f"Folder not found: {root}")
+
+    # --force only makes sense when writing to a file
+    if args.force and not args.output:
+        sys.exit("--force only valid when --output is provided")
 
     master_secret = load_master_secret(args)
 
@@ -131,27 +143,39 @@ def main():
     new_kv: Dict[str, str] = {}
     seen_devices = set()
 
-    for yml in walk_yaml_files(root):
-        doc = read_yaml(yml)
-        if not isinstance(doc, dict):
-            continue
+    # Build list of device names (single device or scanned folder)
+    devices = []
+    if args.device:
+        devices = [str(args.device).strip()]
+    else:
+        found = []
+        for yml in walk_yaml_files(root):
+            doc = read_yaml(yml)
+            if not isinstance(doc, dict):
+                continue
+            device_name, _ = find_device_identity(doc, yml)
+            found.append(str(device_name))
+        # dedupe while preserving order
+        seen_order = set()
+        for d in found:
+            if d not in seen_order:
+                seen_order.add(d)
+                devices.append(d)
 
-        device_name, subs = find_device_identity(doc, yml)
+    # For each device, generate requested secrets and add them unless existing and not forced
+    for device_name in devices:
         seen_devices.add(device_name)
-        secret_key_name = args.mode + "-" + str(device_name).strip()
-
-        # Skip if exists and not forcing
-        if secret_key_name in existing:
-            # Already present—don’t overwrite
-            print(f"[INFO] Skipping existing key '{secret_key_name}'")
-            continue
-
-        if args.mode == "api":
-            secret_value = derive_api_key(device_name, master_secret)
-        else:
-            secret_value = derive_ota_password(device_name, master_secret)
-
-        new_kv[secret_key_name] = secret_value
+        modes = [args.mode] if args.mode in ("api", "ota") else ["api", "ota"]
+        for m in modes:
+            key = f"{m}-{device_name}"
+            if key in existing and not args.force:
+                print(f"[INFO] Skipping existing key '{key}'")
+                continue
+            if m == "api":
+                value = derive_api_key(device_name, master_secret)
+            else:
+                value = derive_ota_password(device_name, master_secret)
+            new_kv[key] = value
 
     # Merge maps (existing wins unless --force)
     out_map = dict(existing)
